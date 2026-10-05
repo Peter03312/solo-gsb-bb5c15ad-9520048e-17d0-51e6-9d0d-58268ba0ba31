@@ -2303,8 +2303,18 @@ def build_snapshot(session, revision: int) -> dict[str, Any]:
                 for ev in forced_events_as_of
             ],
             "recovered_application_ids": sorted(recovered_as_of),
-            "released_revision": occ.released_revision,
-            "release_reason": occ.release_reason,
+            # The release decision only exists from the release revision on:
+            # the audit row is a mutable current-state mirror, so reading its
+            # later-written ``released_revision`` / ``release_reason`` at an
+            # earlier revision would leak the release into a snapshot taken
+            # while the occupation was still active.  Present null / empty
+            # there (exactly as a pre-release query did at the time) and only
+            # show the real values once the target revision reaches the
+            # release revision.
+            "released_revision": (
+                occ.released_revision if not is_active else None
+            ),
+            "release_reason": occ.release_reason if not is_active else "",
             "status": "active" if is_active else "released",
         }
         emergency_records.append(record)

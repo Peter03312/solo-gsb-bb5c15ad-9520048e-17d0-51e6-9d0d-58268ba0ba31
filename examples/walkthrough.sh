@@ -415,6 +415,24 @@ post "/api/emergency-occupations/999999/release" "{\"expected_revision\":$FINAL}
 curl -s "$BASE/api/emergency-occupations?include_inactive=true" \
   | python3 -c 'import json,sys; d=json.load(sys.stdin); print("occupations:", [(o["id"],o["application_id"],o["status"],o.get("released_revision")) for o in d["occupations"]])'
 
+echo "== 50b. back-query never leaks the later release decision =="
+# The release revoked the emergency at REVOKE_REV and restored Q one revision
+# later.  Querying a pre-release revision after the release must still show
+# the occupation as active with no release information at all.
+REVOKE_REV=$(curl -s "$BASE/api/emergency-occupations?status=released" \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["occupations"][0]["released_revision"])')
+APPROVAL_REV=$((REVOKE_REV - 1))   # revision on which the emergency was still active
+curl -s "$BASE/api/revision/$APPROVAL_REV" \
+  | python3 -c 'import json,sys
+o=json.load(sys.stdin)["emergency_occupations"][0]
+print("pre-release snapshot:", o["status"], "; released_revision:", o["released_revision"], "; release_reason:", repr(o["release_reason"]))'
+echo "    same revision queried again is byte-identical (the view is event-replayed):"
+curl -s "$BASE/api/revision/$APPROVAL_REV" | python3 -c 'import json,sys,hashlib; print("   snapshot hash:", hashlib.sha256(sys.stdin.buffer.read()).hexdigest()[:16])'
+curl -s "$BASE/api/revision/$REVOKE_REV" \
+  | python3 -c 'import json,sys
+o=json.load(sys.stdin)["emergency_occupations"][0]
+print("release revision snapshot:", o["status"], "; released_revision:", o["released_revision"], "; release_reason:", repr(o["release_reason"]))'
+
 
 # ---------------------------------------------------------------------------
 # Scheduled auto-approvals (operator-booked UTC appointment)

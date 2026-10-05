@@ -553,7 +553,11 @@ class EmergencyOccupation(Base):
     The row is the mutable current-state mirror (``released_revision`` is
     NULL while active) and the audit link between the revisions; the append-
     only approval/suspension/resumption/revocation events are the source of
-    truth for historical revision snapshots.
+    truth for historical revision snapshots.  As-of snapshots must therefore
+    revision-gate the mirror's release columns: at revisions before
+    ``released_revision`` the occupation is presented active with
+    ``released_revision`` NULL and an empty ``release_reason`` -- the later
+    release decision never travels into earlier history.
     """
 
     __tablename__ = "emergency_occupations"

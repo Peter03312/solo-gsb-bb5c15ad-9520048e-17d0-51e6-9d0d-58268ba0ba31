@@ -539,6 +539,88 @@ class TestEmergencyHistory:
         assert s5["emergency_occupations"][0]["released_revision"] == 4
         assert s5["emergency_occupations"][0]["recovered_application_ids"] == [a]
 
+    def test_pre_release_snapshots_never_leak_the_later_release(self, client):
+        # The release decision must not travel backwards in history: after the
+        # occupation is released, every revision before the release revision
+        # still presents the occupation exactly as it looked before release
+        # (active, no released_revision, empty release_reason), while only the
+        # release revision itself shows the released state.
+        a = submit(client, 100, 110, "ordinary A")
+        approve(client, a, 0)  # 1
+        em = submit(client, 104, 109, "emergency")
+        confirm = confirm_emergency(client, em, 1, reason="burst")
+        assert confirm.status_code == 201, confirm.text  # A forced 2, em 3
+
+        # Capture the pre-release view of the occupation while still active.
+        before = client.get("/api/revision/3").json()["emergency_occupations"][0]
+        assert before["status"] == "active"
+        assert before["released_revision"] is None
+        assert before["release_reason"] == ""
+
+        release = release_emergency(client, em, 3, reason="all clear")
+        assert release.status_code == 200, release.text  # em revoked 4, A back 5
+
+        # Same old revision after release: identical, no decision leaked.
+        after = client.get("/api/revision/3").json()["emergency_occupations"][0]
+        assert after == before
+        assert after["status"] == "active"
+        assert after["released_revision"] is None
+        assert after["release_reason"] == ""
+
+        # The forced-suspension intermediate revision is also untouched.
+        s2 = client.get("/api/revision/2").json()
+        assert s2["emergency_occupations"] == []
+        assert s2["force_suspended_application_ids"] == [a]
+
+        # From the release revision on, the release information is visible and
+        # the forced status is gone even before the ordinary license resumes.
+        s4 = client.get("/api/revision/4").json()["emergency_occupations"][0]
+        assert s4["status"] == "released"
+        assert s4["released_revision"] == 4
+        assert s4["release_reason"] == "all clear"
+        assert s4["still_force_suspended_application_ids"] == []
+
+        # Once the ordinary license is restored (revision 5) the recovery is
+        # visible on the released record.
+        s5 = client.get("/api/revision/5").json()["emergency_occupations"][0]
+        assert s5["status"] == "released"
+        assert s5["released_revision"] == 4
+        assert s5["release_reason"] == "all clear"
+        assert s5["recovered_application_ids"] == [a]
+        assert s5["still_force_suspended_application_ids"] == []
+
+    def test_pre_release_view_is_stable_across_restart(self, client):
+        # History is reconstructed from the append-only event stream, so a
+        # pre-release snapshot must be byte-identical after the release lands
+        # and the server state is rebuilt (here: a fresh snapshot build).
+        a = submit(client, 100, 110, "ordinary A")
+        approve(client, a, 0)  # 1
+        em = submit(client, 104, 109, "emergency")
+        confirm_emergency(client, em, 1)  # 2, 3
+        before = client.get("/api/revision/3").json()
+        release_emergency(client, em, 3)  # 4, 5
+        after = client.get("/api/revision/3").json()
+        assert after == before
+
+    def test_comparison_base_before_release_shows_active_view(self, client):
+        a = submit(client, 100, 110, "ordinary A")
+        approve(client, a, 0)  # 1
+        em = submit(client, 104, 109, "emergency")
+        confirm_emergency(client, em, 1)  # 2, 3
+        release_emergency(client, em, 3)  # 4, 5
+
+        # Base revision 3 sits before the release revision 4 even though the
+        # query happens afterwards: the endpoint sets reflect that.
+        cmp_ = client.get(
+            "/api/revision/compare",
+            params={"base_revision": 3, "target_revision": 5},
+        ).json()
+        assert cmp_["base"]["active_emergency_application_ids"] == [em]
+        assert cmp_["target"]["active_emergency_application_ids"] == []
+        assert cmp_["active_emergency_application_ids"]["removed"] == [em]
+        types = [e["type"] for e in cmp_["emergency_occupation_events"]]
+        assert types == ["emergency_occupation_released"]
+
     def test_comparison_reports_emergency_events(self, client):
         a = submit(client, 100, 110, "ordinary A")
         approve(client, a, 0)  # 1
