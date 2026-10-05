@@ -560,6 +560,17 @@ UTC 左闭右开时段）加原因做**只读预演**，再携预演返回的当
   按修订号排序）。强制暂停、恢复、紧急批准与紧急撤销都是**普通事件流**中的
   行，故每个修订号（含“已强制暂停、紧急尚未批准”与“紧急已撤销、许可尚未
   恢复”的中间修订）都能精确还原；**原批准事件不追改**。
+- **按修订回查以目标修订号为界，不提前泄露解除决定**：`emergency_occupations`
+  记录虽然在紧急批准修订起即出现，但在目标修订号 **< 解除修订号** 时始终
+  呈现 `status="active"`、`released_revision=null`、`release_reason=""`，
+  即使该占用后来已被解除——解除修订号与解除原因只从**解除修订号起**（含）
+  才显示为 `status="released"` 与实际解除信息；`released` 事件同样只在解除
+  修订号起出现在 `emergency_occupation_events`。因此同一旧修订在解除前后
+  （含服务重启后）查询结果逐字段一致；生效中的占用在任一修订都不带解除
+  字段。强制暂停、强制恢复与紧急许可的有效状态仍逐修订由事件流决定
+  （强制暂停在其暂停修订生效、解除修订即解除紧急标记、恢复在其恢复修订
+  生效），与上述呈现严格对应。端到端示例见
+  `examples/emergency-history-lookback.sh`。
 - 占用不触碰保护带宽与管制窗口本身；启动时新表由建表流程自动创建，新增列由
   幂等迁移补齐（历史事件默认按普通事件读取），既有库、已生效带宽与修订号
   不受影响，重启状态不变。
@@ -2030,6 +2041,7 @@ curl -s -X POST http://localhost:8000/api/applications/{近处许可}/revoke \
 ├── tests/                      # 裁决单元测试 + API 端到端测试（SQLite，含 test_waitlist.py 候补用例、test_restriction_windows*.py 管制窗口用例、test_candidate_narrowing.py 候选收窄边界用例、test_scheduled_approval_revisions.py 预约修订回放用例）
 ├── examples/walkthrough.sh     # curl 走查脚本
 ├── examples/candidate-narrowing.sh # 大量时段不相交许可下的候选集收窄走查（本轮）
+├── examples/emergency-history-lookback.sh # 紧急占用确认/解除与按修订回查不泄露解除决定（本轮）
 ├── Dockerfile
 ├── docker-compose.yml          # db + api 一键启动
 ├── requirements.txt / requirements-dev.txt

@@ -2279,6 +2279,13 @@ def build_snapshot(session, revision: int) -> dict[str, Any]:
             for ev in forced_events_as_of:
                 if ev.application_id not in revoked_as_of:
                     still_forced.append(ev.application_id)
+        # The release fields are bounded by the target revision: while the
+        # occupation is still active as of the queried revision the snapshot
+        # must not reveal the later release decision (not its revision, not
+        # its reason), so they render as null / "" exactly like a live active
+        # occupation.  The actual values appear only from the release
+        # revision on, and querying the same pre-release revision before and
+        # after the release yields an identical record.
         record = {
             "id": occ.id,
             "application_id": occ.emergency_application_id,
@@ -2303,8 +2310,12 @@ def build_snapshot(session, revision: int) -> dict[str, Any]:
                 for ev in forced_events_as_of
             ],
             "recovered_application_ids": sorted(recovered_as_of),
-            "released_revision": occ.released_revision,
-            "release_reason": occ.release_reason,
+            "released_revision": (
+                occ.released_revision if not is_active else None
+            ),
+            "release_reason": (
+                occ.release_reason if not is_active else ""
+            ),
             "status": "active" if is_active else "released",
         }
         emergency_records.append(record)

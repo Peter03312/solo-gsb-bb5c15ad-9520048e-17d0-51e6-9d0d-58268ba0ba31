@@ -539,6 +539,102 @@ class TestEmergencyHistory:
         assert s5["emergency_occupations"][0]["released_revision"] == 4
         assert s5["emergency_occupations"][0]["recovered_application_ids"] == [a]
 
+    def test_pre_release_snapshot_never_leaks_the_later_release(self, client):
+        """A pre-release revision stays active with no release fields even
+        after the occupation has since been released (history is immutable)."""
+        a = submit(client, 100, 110, "ordinary A")
+        approve(client, a, 0)  # 1
+        em = submit(client, 104, 109, "emergency")
+        confirm_emergency(client, em, 1)  # A forced 2, em approved 3
+
+        # The same revision queried before the release exists ...
+        before = client.get("/api/revision/3").json()
+        occ_before = before["emergency_occupations"][0]
+        assert occ_before["status"] == "active"
+        assert occ_before["released_revision"] is None
+        assert occ_before["release_reason"] == ""
+        assert (
+            before["emergency_occupations"][0]["still_force_suspended_"
+            "application_ids"] == [a]
+        )
+        # The release boundary event is not visible either.
+        assert [
+            e["event_type"] for e in before["emergency_occupation_events"]
+        ] == ["activated"]
+
+        release_emergency(client, em, 3, reason="all clear")  # 4, 5
+
+        # ... and queried again afterwards must be byte-for-byte the same.
+        after = client.get("/api/revision/3").json()
+        occ_after = after["emergency_occupations"][0]
+        assert occ_after == occ_before
+        assert occ_after["status"] == "active"
+        assert occ_after["released_revision"] is None
+        assert occ_after["release_reason"] == ""
+        assert after["active_emergency_application_ids"] == [em]
+        assert after["force_suspended_application_ids"] == [a]
+        assert [
+            e["event_type"] for e in after["emergency_occupation_events"]
+        ] == ["activated"]
+
+        # The release revision itself is the first revision showing the
+        # release decision, and it stays visible afterwards.
+        s4 = client.get("/api/revision/4").json()
+        occ4 = s4["emergency_occupations"][0]
+        assert occ4["status"] == "released"
+        assert occ4["released_revision"] == 4
+        assert occ4["release_reason"] == "all clear"
+        s5 = client.get("/api/revision/5").json()
+        occ5 = s5["emergency_occupations"][0]
+        assert occ5["status"] == "released"
+        assert occ5["released_revision"] == 4
+        assert occ5["release_reason"] == "all clear"
+        assert occ5["recovered_application_ids"] == [a]
+
+        # Active-but-still-unreleased occupations are also hidden for a
+        # still-active occupation queried at its active revision.
+        em2 = submit(client, 200, 210, "second emergency")
+        confirm_emergency(client, em2, 5, reason="burst two")  # 6
+        live = client.get("/api/revision/current").json()
+        em2_occ = [
+            o for o in live["emergency_occupations"]
+            if o["application_id"] == em2
+        ][0]
+        assert em2_occ["status"] == "active"
+        assert em2_occ["released_revision"] is None
+        assert em2_occ["release_reason"] == ""
+
+    def test_snapshot_release_fields_survive_restart(self, client):
+        """Snapshots are pure reads from the append-only event tables, so
+        reconnecting (a process restart) keeps them identical revision by
+        revision."""
+        from app.db import engine
+
+        a = submit(client, 100, 110, "ordinary A")
+        approve(client, a, 0)  # 1
+        em = submit(client, 104, 109, "emergency")
+        confirm_emergency(client, em, 1)  # 2, 3
+        release_emergency(client, em, 3, reason="post-incident")  # 4, 5
+
+        before = {
+            rev: client.get(f"/api/revision/{rev}").json()
+            for rev in range(1, 6)
+        }
+        # Simulate a restart by dropping the pooled connections; a new
+        # process would reopen the same database and replay the same
+        # append-only rows, so history must not move.
+        engine.dispose()
+        for rev in range(1, 6):
+            after = client.get(f"/api/revision/{rev}").json()
+            occs_after = {
+                o["application_id"]: o for o in after["emergency_occupations"]
+            }
+            occs_before = {
+                o["application_id"]: o
+                for o in before[rev]["emergency_occupations"]
+            }
+            assert occs_after == occs_before
+
     def test_comparison_reports_emergency_events(self, client):
         a = submit(client, 100, 110, "ordinary A")
         approve(client, a, 0)  # 1
